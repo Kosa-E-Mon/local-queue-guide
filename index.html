@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ボート順番待ち</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Hiragino Sans','Yu Gothic','Meiryo',sans-serif;background:#f0f9ff;color:#0c4a6e;min-height:100vh}
+.header{background:#0ea5e9;color:white;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:100;box-shadow:0 2px 8px rgba(14,165,233,0.3)}
+.header h1{font-size:17px;font-weight:700}
+.main{max-width:600px;margin:0 auto;padding:12px 14px 40px}
+.card{background:white;border:1px solid #bae6fd;border-radius:14px;padding:14px 16px;margin-bottom:10px}
+.btn{display:inline-block;padding:9px 18px;border-radius:10px;border:1px solid transparent;cursor:pointer;font-size:14px;font-weight:700;font-family:inherit;transition:opacity .15s}
+.btn:active{opacity:.8}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-primary{background:#0ea5e9;color:white;border-color:#0ea5e9}
+.btn-success{background:#22c55e;color:white;border-color:#22c55e}
+.btn-warn{background:#f59e0b;color:white;border-color:#f59e0b}
+.btn-danger{background:#ef4444;color:white;border-color:#ef4444}
+.btn-ghost{background:white;border-color:#bae6fd;color:#64748b}
+.btn-hd{background:rgba(255,255,255,.2);color:white;border-color:rgba(255,255,255,.4);font-size:12px;padding:6px 12px}
+.tag{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:700}
+.tag-active{background:#fee2e2;color:#dc2626}
+.tag-idle{background:#dcfce7;color:#16a34a}
+input[type=text],input[type=password],input[type=number]{width:100%;padding:9px 12px;border:1px solid #bae6fd;border-radius:8px;font-size:14px;font-family:inherit;color:#0c4a6e;background:white;outline:none}
+input[type=number]{text-align:center;font-size:20px;font-weight:700}
+.timer{font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;color:#0369a1;letter-spacing:-1px}
+.timer.warn{color:#dc2626}
+.section-label{font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.queue-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#f8fafc;border-radius:8px;margin-bottom:4px}
+.num-badge{width:24px;height:24px;border-radius:50%;background:#0ea5e9;color:white;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0}
+.notify-banner{background:#f59e0b;color:white;border-radius:10px;padding:10px 14px;font-weight:700;font-size:15px;text-align:center;margin-bottom:12px;animation:pulse 1s ease-in-out 3}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}
+.row{display:flex;justify-content:space-between;align-items:center}
+.muted{color:#94a3b8;font-size:13px}
+.form-box{background:#f0f9ff;border-radius:10px;padding:12px;margin-top:10px}
+.num-row{display:flex;gap:12px;margin-bottom:10px}
+.num-col{flex:1;text-align:center}
+.num-col label{display:block;font-size:13px;color:#64748b;margin-bottom:4px}
+</style>
+</head>
+<body>
+<div id="app"><div style="text-align:center;padding:3rem;color:#94a3b8">読み込み中...</div></div>
+<script>
+const GAS = 'https://script.google.com/macros/s/AKfycbxQk0Q27tEHajt-kZ6CN3Pz1IlTIWJGOGr9nMmCZNIMisAUQPuv7VtmI5NakF73zgrz/exec';
+
+// ─── グローバル状態 ─────────────────────────────
+let state = null;
+let page = 'customer';
+let authed = false;
+let adminPw = '1234';
+let myTicket = null;
+let myNotified = false;
+let warnedBoats = new Set();
+let pollTimer = null;
+let showForm = false;
+let formData = { boatName:'', ticketNumber:0, adults:0, children:0 };
+let settingsEdit = null;
+let pwVal = '', pwErr = false;
+
+// ─── 音声・通知 ──────────────────────────────────
+function beep(freq, dur){
+  try{
+    const ctx = new(window.AudioContext||window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.frequency.value = freq||880;
+    g.gain.setValueAtTime(.4,ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+(dur||.4));
+    o.start(); o.stop(ctx.currentTime+(dur||.4));
+  }catch(e){}
+}
+function speak(txt){
+  if(!window.speechSynthesis)return;
+  const u=new SpeechSynthesisUtterance(txt);
+  u.lang='ja-JP'; u.rate=.9;
+  speechSynthesis.speak(u);
+}
+function announce5min(){
+  beep(880,.5);
+  setTimeout(()=>{
+    speak('あと5分ですので、乗り場までお越しください');
+    setTimeout(()=>{
+      beep(880,.5);
+      setTimeout(()=>speak('あと5分ですので、乗り場までお越しください'),600);
+    },4500);
+  },600);
+}
+function announceYourTurn(){
+  beep(1000,.6);
+  setTimeout(()=>speak('お客様の順番が来ました。乗り場までお越しください。'),700);
+}
+
+// ─── 時間計算 ────────────────────────────────────
+function fmtT(ms){
+  if(ms<=0)return'0:00';
+  return`${Math.floor(ms/60000)}:${String(Math.floor((ms%60000)/1000)).padStart(2,'0')}`;
+}
+function rem(boat){
+  if(!boat.startTime||boat.status!=='active')return null;
+  const dur=(state?state.maxDuration:30)*60000;
+  return Math.max(0,new Date(boat.startTime).getTime()+dur-Date.now());
+}
+
+// ─── API ─────────────────────────────────────────
+async function apiGet(action){
+  const r=await fetch(`${GAS}?action=${action}`);
+  return r.json();
+}
+async function apiPost(data){
+  const r=await fetch(GAS,{method:'POST',body:JSON.stringify(data)});
+  return r.json();
+}
+
+// ─── ポーリング ──────────────────────────────────
+async function poll(){
+  try{
+    const s=await apiGet('getState');
+    if(s.error){console.warn(s.error);return;}
+    state=s;
+
+    // 5分警告チェック
+    (state.boats||[]).filter(b=>b.status==='active').forEach(b=>{
+      const r=rem(b);
+      if(r!==null&&r<=(state.warnMinutes||5)*60000&&r>0&&!warnedBoats.has(b.name)){
+        warnedBoats.add(b.name); announce5min();
+      }
+      if(r!==null&&r===0) warnedBoats.delete(b.name);
+    });
+
+    // 自分の番チェック
+    if(myTicket&&!myNotified){
+      const onBoat=(state.boats||[]).find(b=>b.ticketNumber===myTicket&&b.status==='active');
+      if(onBoat){
+        myNotified=true; announceYourTurn();
+        if(Notification.permission==='granted'){
+          try{new Notification('順番が来ました！',{body:'乗り場までお越しください'});}catch{}
+        }
+      }
+    }
+    render();
+  }catch(e){console.error(e);}
+}
+function startPoll(){
+  if(pollTimer)clearInterval(pollTimer);
+  poll();
+  pollTimer=setInterval(poll,3000);
+}
+
+// ─── ナビ ─────────────────────────────────────────
+function go(p){
+  page=p;
+  window.location.hash=p==='customer'?'':p;
+  render();
+}
+window.addEventListener('hashchange',()=>{
+  const h=window.location.hash;
+  page=h==='#admin'?'admin':h==='#settings'?'settings':'customer';
+  render();
+});
+
+// ─── レンダー振り分け ─────────────────────────────
+function render(){
+  const app=document.getElementById('app');
+  if(!app)return;
+  if((page==='admin'||page==='settings')&&!authed){app.innerHTML=renderPw();bindPw();return;}
+  if(page==='settings'){app.innerHTML=renderSettings();bindSettings();return;}
+  if(page==='admin'){app.innerHTML=renderAdmin();bindAdmin();return;}
+  app.innerHTML=renderCustomer();bindCustomer();
+}
+
+// ─── パスワード ───────────────────────────────────
+function renderPw(){
+  return`<div style="padding:2rem 1rem;max-width:340px;margin:0 auto">
+    <h2 style="font-size:18px;font-weight:700;margin-bottom:1.5rem">管理者ログイン</h2>
+    <input id="pw-in" type="password" placeholder="パスワード" style="${pwErr?'border-color:#ef4444':''}">
+    ${pwErr?'<p style="color:#ef4444;font-size:13px;margin-top:6px">パスワードが違います</p>':''}
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn btn-primary" id="pw-ok" style="flex:1">ログイン</button>
+      <button class="btn btn-ghost" id="pw-back">← 戻る</button>
+    </div>
+  </div>`;
+}
+function bindPw(){
+  const inp=document.getElementById('pw-in');
+  const check=()=>{
+    if(inp.value===adminPw){authed=true;pwErr=false;render();}
+    else{pwErr=true;render();setTimeout(()=>{pwErr=false;render();},2000);}
+  };
+  inp?.addEventListener('keydown',e=>{if(e.key==='Enter')check();});
+  document.getElementById('pw-ok')?.addEventListener('click',check);
+  document.getElementById('pw-back')?.addEventListener('click',()=>go('customer'));
+}
+
+// ─── お客様画面 ───────────────────────────────────
+function renderCustomer(){
+  const boats=(state?.boats||[]).filter(b=>b.enabled);
+  const queue=state?.queue||[];
+  const maxD=state?.maxDuration||30;
+  const warnM=state?.warnMinutes||5;
+
+  // 自分の状況
+  let myPos=null, myOnBoat=null;
+  if(myTicket&&state){
+    myOnBoat=(state.boats||[]).find(b=>b.ticketNumber===myTicket&&b.status==='active');
+    if(!myOnBoat){
+      const idx=queue.findIndex(q=>q.ticketNumber===myTicket);
+      if(idx>=0)myPos=idx+1;
+    }
+  }
+
+  // 推定待ち時間
+  let estWait=null;
+  if(myPos&&state){
+    const active=boats.filter(b=>b.status==='active');
+    if(active.length>0){
+      const minR=Math.min(...active.map(b=>rem(b)||0));
+      estWait=minR+(myPos-1)*maxD*60000;
+    }else{
+      estWait=0;
+    }
+  }
+
+  const myCardHtml=myTicket?`
+  <div class="card" style="border:2px solid ${myOnBoat?'#f59e0b':'#93c5fd'}">
+    ${myOnBoat?'<div class="notify-banner">順番が来ました！乗り場へお越しください</div>':''}
+    <div class="row">
+      <div>
+        <span style="font-weight:700;font-size:17px">整理番号 ${myTicket}番</span>
+        <span class="muted" style="margin-left:10px">${myOnBoat?'今すぐご乗船ください':myPos?`待ち ${myPos}番目`:'処理中'}</span>
+      </div>
+      <button class="btn btn-ghost" id="clear-t" style="font-size:12px">削除</button>
+    </div>
+    ${estWait!==null?`<div style="margin-top:10px;padding-top:10px;border-top:1px solid #e0f2fe">
+      <div class="muted">推定待ち時間</div>
+      <div style="font-size:22px;font-weight:800;color:#1d4ed8">${estWait===0?'もうすぐです':fmtT(estWait)}</div>
+      <div class="muted">残り${warnM}分になったらお知らせします</div>
+    </div>`:''}
+  </div>`:'';
+
+  const boatHtml=boats.map(b=>{
+    const r=rem(b);
+    const isW=r!==null&&r<=(warnM*60000)&&r>0;
+    return`<div class="card">
+      <div class="row" style="margin-bottom:8px">
+        <span style="font-weight:700;font-size:16px">${b.name}</span>
+        <span class="tag ${b.status==='active'?'tag-active':'tag-idle'}">${b.status==='active'?'使用中':'空き'}</span>
+      </div>
+      ${r!==null?`<div class="timer ${isW?'warn':''}">残り ${fmtT(r)}</div>`:''}
+      <div class="muted" style="margin-top:4px">待ち ${queue.length}人</div>
+    </div>`;
+  }).join('');
+
+  return`<div>
+    <div class="header">
+      <h1>🚣 ボート順番待ち</h1>
+      <button class="btn btn-hd" id="go-adm">管理者</button>
+    </div>
+    <div class="main">
+      ${myCardHtml}
+      <div class="section-label" style="margin-top:4px">ボートの状況</div>
+      ${boatHtml||'<div class="card muted">ボートの情報を読み込み中...</div>'}
+      ${!myTicket?`<button class="btn btn-primary" id="join-q" style="width:100%;margin-top:8px;padding:14px;font-size:16px">
+        順番待ちに並ぶ ${queue.length>0?`（現在${queue.length}人待ち）`:''}
+      </button>`:''}
+      <div class="muted" style="text-align:center;margin-top:16px;font-size:11px">このページは自動更新されます</div>
+    </div>
+  </div>`;
+}
+function bindCustomer(){
+  document.getElementById('go-adm')?.addEventListener('click',()=>go('admin'));
+  document.getElementById('clear-t')?.addEventListener('click',()=>{myTicket=null;myNotified=false;render();});
+  document.getElementById('join-q')?.addEventListener('click',async()=>{
+    if(Notification.permission==='default')Notification.requestPermission().catch(()=>{});
+    const r=await apiPost({action:'joinQueue'});
+    if(r.success){myTicket=r.ticketNumber;myNotified=false;await poll();}
+    else alert('エラーが発生しました。もう一度お試しください。');
+  });
+}
+
+// ─── 管理者画面 ───────────────────────────────────
+function renderAdmin(){
+  if(!state)return'<div class="main" style="text-align:center;padding:2rem;color:#94a3b8">読み込み中...</div>';
+  const queue=state.queue||[];
+  const maxD=state.maxDuration||30;
+  const warnM=state.warnMinutes||5;
+
+  // 利用中：残り時間昇順 → 待機中 → 空き
+  const boats=[...(state.boats||[]).filter(b=>b.enabled)].sort((a,b)=>{
+    if(a.status==='active'&&b.status!=='active')return -1;
+    if(a.status!=='active'&&b.status==='active')return 1;
+    if(a.status==='active'&&b.status==='active')return(rem(a)||0)-(rem(b)||0);
+    return 0;
+  });
+
+  const boatHtml=boats.map(b=>{
+    const r=rem(b);
+    const isW=r!==null&&r<=(warnM*60000)&&r>0;
+    const isShowForm=showForm&&formData.boatName===b.name;
+
+    if(b.status==='active'){
+      return`<div class="card" style="border-color:${isW?'#f59e0b':'#86efac'}">
+        <div class="row" style="margin-bottom:8px">
+          <div>
+            <span style="font-weight:700;font-size:16px">${b.name}</span>
+            <span class="tag tag-active" style="margin-left:8px">利用中</span>
+          </div>
+          <div class="timer ${isW?'warn':''}">${fmtT(r)}</div>
+        </div>
+        <div style="font-size:13px;color:#64748b;margin-bottom:10px">
+          整理番号 <b>${b.ticketNumber}番</b>　大人 <b>${b.adults}</b>　子供 <b>${b.children}</b>
+        </div>
+        ${isShowForm?renderStartForm():`
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-success ret-btn" data-boat="${b.name}" data-early="0" style="flex:1">返却完了</button>
+          <button class="btn btn-warn ret-btn" data-boat="${b.name}" data-early="1" style="flex:1">早期返却</button>
+        </div>`}
+      </div>`;
+    }else{
+      return`<div class="card" style="opacity:.85">
+        <div class="row" style="margin-bottom:8px">
+          <span style="font-weight:700;font-size:16px">${b.name}</span>
+          <span class="tag tag-idle">空き</span>
+        </div>
+        ${isShowForm?renderStartForm():
+          queue.length>0&&!showForm?`<button class="btn btn-primary call-btn" data-boat="${b.name}" style="width:100%">
+            次の方を呼ぶ（${queue[0].ticketNumber}番）
+          </button>`:'<div class="muted">待ちなし</div>'}
+      </div>`;
+    }
+  }).join('');
+
+  const qHtml=queue.length===0
+    ?'<div class="muted" style="padding:6px 0">待ちなし</div>'
+    :queue.map((q,i)=>`<div class="queue-item">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="num-badge">${i+1}</span>
+        <span style="font-weight:600">整理番号 ${q.ticketNumber}番</span>
+        <span class="muted">${q.joinedAt}</span>
+      </div>
+      <button class="btn btn-ghost del-q" data-t="${q.ticketNumber}" style="font-size:12px;padding:4px 10px">削除</button>
+    </div>`).join('');
+
+  return`<div>
+    <div class="header">
+      <h1>⚙️ 管理画面</h1>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-hd" id="go-set">設定</button>
+        <button class="btn btn-hd" id="go-lo">ログアウト</button>
+      </div>
+    </div>
+    <div class="main">
+      <div class="section-label">ボート状況（残り時間少ない順）</div>
+      ${boatHtml}
+      <div class="section-label" style="margin-top:14px">順番待ち（${queue.length}人）</div>
+      <div class="card" style="padding:10px 12px">${qHtml}</div>
+      <div style="display:flex;gap:10px;margin-top:20px">
+        <button class="btn btn-danger" id="end-biz" style="flex:1">業務終了・履歴転記</button>
+        <button class="btn btn-ghost" id="dbg-rst" style="font-size:13px">リセット</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderStartForm(){
+  return`<div class="form-box">
+    <div class="section-label">整理番号 ${formData.ticketNumber}番 のお客様</div>
+    <div class="num-row">
+      <div class="num-col">
+        <label>大人</label>
+        <input type="number" id="f-ad" min="0" max="20" value="${formData.adults}">
+      </div>
+      <div class="num-col">
+        <label>子供</label>
+        <input type="number" id="f-ch" min="0" max="20" value="${formData.children}">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-primary" id="do-start" style="flex:1">スタート</button>
+      <button class="btn btn-ghost" id="cancel-form">キャンセル</button>
+    </div>
+  </div>`;
+}
+
+function bindAdmin(){
+  document.getElementById('go-set')?.addEventListener('click',()=>go('settings'));
+  document.getElementById('go-lo')?.addEventListener('click',()=>{authed=false;go('customer');});
+
+  // 返却ボタン
+  document.querySelectorAll('.ret-btn').forEach(btn=>btn.addEventListener('click',async e=>{
+    const boatName=e.currentTarget.dataset.boat;
+    const early=e.currentTarget.dataset.early==='1';
+    await apiPost({action:'returnBoat',boatName,early});
+    await poll();
+    // 次の待ちがいればフォームを表示
+    const q=state?.queue||[];
+    if(q.length>0){
+      formData={boatName,ticketNumber:q[0].ticketNumber,adults:0,children:0};
+      showForm=true;
+    }else{
+      showForm=false;
+    }
+    render();
+  }));
+
+  // 空きボートで呼ぶ
+  document.querySelectorAll('.call-btn').forEach(btn=>btn.addEventListener('click',e=>{
+    const boatName=e.currentTarget.dataset.boat;
+    const q=state?.queue||[];
+    if(q.length===0)return;
+    formData={boatName,ticketNumber:q[0].ticketNumber,adults:0,children:0};
+    showForm=true;
+    render();
+  }));
+
+  // スタート
+  document.getElementById('do-start')?.addEventListener('click',async()=>{
+    formData.adults=parseInt(document.getElementById('f-ad')?.value||'0');
+    formData.children=parseInt(document.getElementById('f-ch')?.value||'0');
+    const r=await apiPost({action:'startBoat',boatName:formData.boatName,
+      ticketNumber:formData.ticketNumber,adults:formData.adults,children:formData.children});
+    if(r.success){showForm=false;await poll();}
+    else alert('エラー: '+r.error);
+  });
+
+  document.getElementById('cancel-form')?.addEventListener('click',()=>{showForm=false;render();});
+
+  // キュー削除
+  document.querySelectorAll('.del-q').forEach(btn=>btn.addEventListener('click',async e=>{
+    const t=parseInt(e.currentTarget.dataset.t);
+    if(!confirm(`整理番号 ${t}番 をキューから削除しますか？`))return;
+    await apiPost({action:'removeFromQueue',ticketNumber:t});
+    await poll();
+  }));
+
+  // 業務終了
+  document.getElementById('end-biz')?.addEventListener('click',async()=>{
+    if(!confirm('業務を終了して本日のデータを履歴に転記しますか？'))return;
+    const r=await apiPost({action:'endBusiness'});
+    if(r.success){alert('業務終了しました。お疲れさまでした！');warnedBoats=new Set();await poll();}
+    else alert(r.error||'エラーが発生しました');
+  });
+
+  // デバッグリセット
+  document.getElementById('dbg-rst')?.addEventListener('click',async()=>{
+    if(!confirm('全データをリセットします（履歴には残りません）。よろしいですか？'))return;
+    await apiPost({action:'resetDebug'});
+    warnedBoats=new Set();myTicket=null;myNotified=false;showForm=false;
+    await poll();
+  });
+}
+
+// ─── 設定画面 ─────────────────────────────────────
+function renderSettings(){
+  if(!settingsEdit){
+    settingsEdit={boats:JSON.parse(JSON.stringify(state?.boats||[])),pw:adminPw};
+  }
+  const rows=settingsEdit.boats.map(b=>`
+  <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+    <label style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap;min-width:76px">
+      <input type="checkbox" class="b-chk" data-id="${b.id}" ${b.enabled?'checked':''}> 使用する
+    </label>
+    <input type="text" class="b-name" data-id="${b.id}" value="${b.name}" ${!b.enabled?'disabled':''} style="flex:1">
+  </div>`).join('');
+
+  return`<div>
+    <div class="header">
+      <h1>🛠 設定</h1>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-hd" id="s-back">← 管理</button>
+        <button class="btn btn-hd" id="s-lo">ログアウト</button>
+      </div>
+    </div>
+    <div class="main">
+      <div class="card">
+        <div class="section-label">管理者パスワード</div>
+        <input type="text" id="s-pw" value="${settingsEdit.pw}" placeholder="パスワード">
+      </div>
+      <div class="card">
+        <div class="section-label">ボート設定（名称・使用/未使用）</div>
+        ${rows}
+      </div>
+      <button class="btn btn-primary" id="s-save" style="width:100%;padding:14px">保存する</button>
+      <div style="margin-top:12px;padding:14px;background:white;border-radius:14px;border:1px solid #bae6fd">
+        <div class="section-label">深夜0時リセット設定（初回のみ）</div>
+        <p style="font-size:13px;color:#64748b;margin-bottom:10px">Apps Scriptを開いて「setupTrigger」を実行してください</p>
+        <div style="font-size:12px;color:#94a3b8">
+          手順: Apps Script → 関数選択「setupTrigger」→ 実行ボタン
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+function bindSettings(){
+  document.getElementById('s-back')?.addEventListener('click',()=>{settingsEdit=null;go('admin');});
+  document.getElementById('s-lo')?.addEventListener('click',()=>{authed=false;settingsEdit=null;go('customer');});
+  document.querySelectorAll('.b-chk').forEach(cb=>cb.addEventListener('change',e=>{
+    const id=e.target.dataset.id;
+    settingsEdit.boats=settingsEdit.boats.map(b=>b.id===id?{...b,enabled:e.target.checked}:b);
+    render();
+  }));
+  document.querySelectorAll('.b-name').forEach(inp=>inp.addEventListener('input',e=>{
+    const id=e.target.dataset.id;
+    settingsEdit.boats=settingsEdit.boats.map(b=>b.id===id?{...b,name:e.target.value}:b);
+  }));
+  document.getElementById('s-save')?.addEventListener('click',async()=>{
+    const newPw=document.getElementById('s-pw')?.value||'1234';
+    adminPw=newPw;
+    settingsEdit.pw=newPw;
+    const r=await apiPost({action:'saveSettings',boats:settingsEdit.boats});
+    if(r.success){settingsEdit=null;await poll();alert('保存しました');}
+    else alert('エラー: '+r.error);
+  });
+}
+
+// ─── 起動 ─────────────────────────────────────────
+const h=window.location.hash;
+page=h==='#admin'?'admin':h==='#settings'?'settings':'customer';
+render();
+startPoll();
+</script>
+</body>
+</html>
