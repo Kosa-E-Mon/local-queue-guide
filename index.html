@@ -562,6 +562,7 @@ let totalWalkDist = 0, lastWalkPos = null;
 let facilityTimer = null;
 let arStream = null, arWatchId = null, arLastDist = 0;
 let voicePlaying = false; // 音声重複再生ロック
+let gpsLocked = false;   // スタートアナウンス中のGPS到着判定ロック
 
 // ══════════════════════════════════════
 // ローカルストレージ
@@ -629,7 +630,8 @@ function sheetURL(sid, sheet) {
 async function fetchSheet(sid, sheet) {
   const res = await fetch(sheetURL(sid, sheet));
   if (!res.ok) throw new Error(`fetch failed: ${sheet}`);
-  return await res.text();
+  const text = await res.text();
+  return text.replace(/^\uFEFF/, ''); // BOM除去
 }
 
 // ══════════════════════════════════════
@@ -909,6 +911,7 @@ function startWalk(playStartAnnounce) {
 
   if (!playStartAnnounce) return;
 
+  gpsLocked = true; // スタートアナウンス中はGPS到着判定をロック
   setTimeout(() => {
     const caution = getCaution(currentCourse.course_type);
     const cautionUrl = getCautionUrl(currentCourse.course_type);
@@ -918,15 +921,15 @@ function startWalk(playStartAnnounce) {
 
     function playStart() {
       if (startSpot.audio_start_url) {
-        playVoice(startSpot.audio_start_url, startText);
+        playVoice(startSpot.audio_start_url, startText, () => { gpsLocked = false; }, true);
       } else {
-        speakTTS(startText);
+        speakTTS(startText, () => { gpsLocked = false; });
       }
     }
 
     function playCautionThenStart() {
       if (cautionUrl) {
-        playVoice(cautionUrl, caution, () => setTimeout(playStart, 300));
+        playVoice(cautionUrl, caution, () => setTimeout(playStart, 300), true);
       } else if (caution) {
         speakTTS(caution, () => setTimeout(playStart, 300));
       } else {
@@ -937,7 +940,7 @@ function startWalk(playStartAnnounce) {
     if (specialActive && currentCourse.audio_special_start_url) {
       playVoice(currentCourse.audio_special_start_url, `特別アナウンスです。`, () => {
         setTimeout(playCautionThenStart, 300);
-      });
+      }, true);
     } else {
       playCautionThenStart();
     }
@@ -1191,9 +1194,9 @@ function onGPSUpdate(pos) {
   const btnAR = document.getElementById('btn-ar');
   if (dist <= spot.approach_dist) { btnAR.classList.add('show'); }
 
-  // 到着判定
-  if (!arrivedDetected && dist <= spot.arrive_dist) { arrivedDetected = true; autoArrive(); return; }
-  if (!approachNotified && dist <= spot.approach_dist && dist > spot.arrive_dist) {
+  // 到着判定（スタートアナウンス中はスキップ）
+  if (!arrivedDetected && !gpsLocked && dist <= spot.arrive_dist) { arrivedDetected = true; autoArrive(); return; }
+  if (!approachNotified && !gpsLocked && dist <= spot.approach_dist && dist > spot.arrive_dist) {
     approachNotified = true;
     playVoice(spot.audio_approach_url, `まもなく${spot.spot_name}です。あと少しです。`);
   }
