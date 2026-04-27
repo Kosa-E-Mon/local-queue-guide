@@ -725,8 +725,8 @@ function applyConfig() {
   if (cfg.app_subtitle) document.getElementById('home-subtitle').textContent = cfg.app_subtitle;
 
   // ヘッダー画像（重複防止）
-  // header_image_id 未設定時は ./header.jpg を使用（GitHub直置き対応）
-  if (cfg.header_type === 'image') {
+  // header_type='none' の場合のみ非表示。未設定・'image' はデフォルトで ./header.jpg を表示
+  if (cfg.header_type !== 'none') {
     const hdr = document.getElementById('home-header');
     if (!hdr.querySelector('.home-header-img')) {
       const img = document.createElement('img');
