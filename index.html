@@ -725,12 +725,15 @@ function applyConfig() {
   if (cfg.app_subtitle) document.getElementById('home-subtitle').textContent = cfg.app_subtitle;
 
   // ヘッダー画像（重複防止）
-  if (cfg.header_type === 'image' && cfg.header_image_id) {
+  // header_image_id 未設定時は ./header.jpg を使用（GitHub直置き対応）
+  if (cfg.header_type === 'image') {
     const hdr = document.getElementById('home-header');
     if (!hdr.querySelector('.home-header-img')) {
       const img = document.createElement('img');
       img.className = 'home-header-img';
-      img.src = drivePhotoUrl(cfg.header_image_id) || cfg.header_image_id;
+      img.src = cfg.header_image_id
+        ? (drivePhotoUrl(cfg.header_image_id) || cfg.header_image_id)
+        : './header.jpg';
       hdr.prepend(img);
     }
   }
