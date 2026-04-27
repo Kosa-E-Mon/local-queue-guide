@@ -538,11 +538,13 @@ function driveUrl(url) {
 // DriveのURLを写真表示用（thumbnail）に変換
 function drivePhotoUrl(url) {
   if (!url) return null;
-  const m = url.match(/\/file\/d\/([^/]+)/);
+  const m = url.match(/\/file\/d\/([^/?]+)/);
   if (m) return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w800`;
   const m2 = url.match(/[?&]id=([^&]+)/);
   if (m2 && url.includes('drive.google.com')) return `https://drive.google.com/thumbnail?id=${m2[1]}&sz=w800`;
   if (url.includes('drive.google.com')) return url;
+  // bare file ID（英数字・ハイフン・アンダースコア 25文字以上）
+  if (/^[A-Za-z0-9_-]{25,}$/.test(url)) return `https://drive.google.com/thumbnail?id=${url}&sz=w800`;
   return url;
 }
 
@@ -722,12 +724,15 @@ function applyConfig() {
   document.getElementById('home-title').textContent = title;
   if (cfg.app_subtitle) document.getElementById('home-subtitle').textContent = cfg.app_subtitle;
 
-  // ヘッダー画像
+  // ヘッダー画像（重複防止）
   if (cfg.header_type === 'image' && cfg.header_image_id) {
-    const img = document.createElement('img');
-    img.className = 'home-header-img';
-    img.src = drivePhotoUrl(cfg.header_image_id) || cfg.header_image_id;
-    document.getElementById('home-header').prepend(img);
+    const hdr = document.getElementById('home-header');
+    if (!hdr.querySelector('.home-header-img')) {
+      const img = document.createElement('img');
+      img.className = 'home-header-img';
+      img.src = drivePhotoUrl(cfg.header_image_id) || cfg.header_image_id;
+      hdr.prepend(img);
+    }
   }
 }
 
@@ -1110,8 +1115,7 @@ function speakTTS(text, onEnd) {
   const v = speechSynthesis.getVoices().find(v => v.lang.startsWith('ja'));
   if (v) u.voice = v;
   u.onend = () => { voicePlaying = false; if (onEnd) onEnd(); };
-  u.onerror = () => { voicePlaying = false; };
-  if (onEnd) u.onend = () => { voicePlaying = false; onEnd(); };
+  u.onerror = () => { voicePlaying = false; if (onEnd) onEnd(); };
   setVoiceLog('🔊', text);
   speechSynthesis.speak(u);
 }
