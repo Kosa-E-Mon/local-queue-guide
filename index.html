@@ -605,7 +605,9 @@ function parseCSV(text) {
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim(); if (!line) continue;
     const vals = splitLine(line); const obj = {};
-    headers.forEach((h, idx) => { obj[h.trim()] = (vals[idx] || '').trim(); });
+    // 全角スペース(U+3000)も除去するtrim
+    const utrim = s => s.replace(/^[\s\u3000]+|[\s\u3000]+$/g, '');
+    headers.forEach((h, idx) => { obj[utrim(h)] = utrim(vals[idx] || ''); });
     rows.push(obj);
   }
   return rows;
@@ -636,6 +638,16 @@ async function fetchSheet(sid, sheet) {
   return text.replace(/^\uFEFF/, ''); // BOM除去
 }
 
+// configシート取得（'config' → ' config' の順でフォールバック）
+async function fetchConfigSheet(sid) {
+  for (const name of ['config', ' config']) {
+    const text = await fetchSheet(sid, name);
+    const rows = parseCSV(text);
+    if (rows.length > 0 && 'key' in rows[0]) return text;
+  }
+  return '';
+}
+
 // ══════════════════════════════════════
 // 初期化
 // ══════════════════════════════════════
@@ -650,7 +662,7 @@ async function initApp() {
 
   try {
     const [cfgCSV, coursesCSV, spotsCSV, csCSV, facCSV] = await Promise.all([
-      fetchSheet(currentSheetId, 'config'),
+      fetchConfigSheet(currentSheetId),
       fetchSheet(currentSheetId, 'courses'),
       fetchSheet(currentSheetId, 'spots'),
       fetchSheet(currentSheetId, 'course_spots'),
